@@ -1,0 +1,24 @@
+:root {
+  --paper: oklch(0.956 .018 36);
+  --surface: oklch(.982 .008 36);
+  --tint: oklch(.916 0.044 36);
+  --accent: oklch(0.48 0.105 36);
+  --on-accent: oklch(.985 .008 36);
+  --ink: oklch(.235 .037 36);
+  --muted: oklch(.42 .04 36);
+  --rule: oklch(.824 0.040 36);
+  --rail: oklch(0.29 0.061 36);
+  --rail-ink: oklch(.953 .015 36);
+  --rail-highlight: oklch(.34 0.065 36);
+  --signal: oklch(.46 .145 25);
+  --title-font: "Instrument Serif", "Noto Serif SC", "Songti SC", "STSong", Georgia, serif;
+  --body-font: "Noto Serif SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --rail-width: clamp(13rem, 17vw, 19rem);
+  --login-ratio: 3fr;
+  --feature-ratio: 4fr;
+  --split-ratio: 5fr;
+  --radius: 3px;
+  --rail-size: 3px;
+  --cell-min: 5rem;
+}
+.feature { border-left: none; border-top: .36rem solid var(--accent); }

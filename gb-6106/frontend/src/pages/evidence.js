@@ -2,7 +2,10 @@ import { api } from "../api/workbench.js";
 import { errorText, field } from "../components/common/fields.js";
 import { empty, pageHeading, section } from "../components/common/panel.js";
 import { resultTable } from "../components/common/table.js";
+import { status } from "../components/common/status.js";
 import { submit } from "../hooks/submit.js";
+import { poll } from "../hooks/poll.js";
+import { continuationSection } from "../components/continuation.js";
 import { el } from "../utils/dom.js";
 import { cell, download, time } from "../utils/format.js";
 
@@ -22,9 +25,33 @@ function signature(review) {
 export async function evidencePage(config, user, route) {
   const runs = (await api.runs()).filter(item => item.status === "done");
   const run = route.id ? await api.run(route.id) : runs[0];
-  if (!run?.result) return el("div", {class: "page"},
-    pageHeading(config.modules[3], null), empty("成功执行一个批次后可以查看、签核和下载证据。"),
-    el("a", {href: "#runs"}, config.modules[2]));
+  if (run?.status !== "done" || !run?.result) {
+    if (run && ["queued", "failed", "rejected", "conflict"].includes(run.status)) {
+      const controller = new AbortController();
+      if (run.status === "queued") {
+        poll(async () => {
+          const next = await api.run(run.id, controller.signal);
+          if (next.status === "done") {
+            location.reload();
+            return false;
+          }
+          return next.status === "queued";
+        }, controller.signal);
+      }
+      return el("div", {class: "page"},
+        pageHeading(config.modules[3], run.case_title),
+        section("凭据尚未开放下载",
+          el("div", {class: "stack"},
+            el("div", {}, status(run.status), el("strong", {}, `批次 #${run.id}`)),
+            el("p", {role: run.status === "queued" ? null : "alert"},
+              run.status === "queued" ? "整单写成后才会开放新凭据下载，页面会自动刷新。" : (run.failure || "该批次未完成。")),
+            run.winner_run_id ? el("a", {class: "button", href: `#evidence/${run.winner_run_id}`}, `查看接班批次 #${run.winner_run_id}`) : null,
+            run.base_run_id ? el("a", {href: `#evidence/${run.base_run_id}`}, "返回原交班凭据") : el("a", {href: "#evidence"}, "返回证据列表"))));
+    }
+    return el("div", {class: "page"},
+      pageHeading(config.modules[3], null), empty("成功执行一个批次后可以查看、签核和下载证据。"),
+      el("a", {href: "#runs"}, config.modules[2]));
+  }
 
   const review = await api.review(run.id);
   const issue = errorText();
@@ -52,6 +79,7 @@ export async function evidencePage(config, user, route) {
       el("details", {}, el("summary", {}, "证据摘要"), el("code", {}, run.digest))),
     el("dl", {class: "metrics"}, Object.entries(run.result.metrics).map(([label, value]) =>
       el("div", {}, el("dt", {}, label), el("dd", {}, cell(value))))),
+    continuationSection(run, user),
     section("业务结果明细", run.result.rows.length ? resultTable(run.result.rows) : empty("此批次无明细。")),
     section("复核签署", signing));
 }

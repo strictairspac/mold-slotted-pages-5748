@@ -7,9 +7,11 @@ import { el } from "../utils/dom.js";
 import { time } from "../utils/format.js";
 
 function reportState(run) {
+  const winner = run.winner_run_id || run.continuation?.winner_run_id;
   return el("div", {class: "stack", id: "run-state"}, status(run.status),
     el("p", {}, run.status === "queued" ? "后台正在处理，页面会自动更新。" : run.failure || run.result?.summary),
-    run.status === "done" ? el("a", {class: "button", href: `#evidence/${run.id}`}, "查看业务证据") : null);
+    run.status === "done" ? el("a", {class: "button", href: `#evidence/${run.id}`}, "查看证据 / 夜班续单") : null,
+    run.status === "conflict" && winner ? el("a", {class: "button", href: `#evidence/${winner}`}, `查看接班批次 #${winner}`) : null);
 }
 
 export async function runsPage(config, route, signal) {

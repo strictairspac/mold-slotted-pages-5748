@@ -49,45 +49,43 @@ def validate(payload):
                 raise ValueError(f"第 {step} 步备注不是有效 UTF-8 文本") from None
 
 
-def run(payload, parameter, db):
-    validate(payload)
-    if parameter < HEADER_BYTES:
-        raise ValueError(f"至少需要 {HEADER_BYTES} 字节页头")
-    page = SlottedPage(parameter)
-    denied = 0
-    peak_waste = 0
-    compactions = 0
+def apply_operation(page, operation, step=None):
+    """Apply one operation and return its replay row.
+
+    ValueError is deliberately left to the caller. Lenient replay counts it as a
+    denied operation; continuation orders use strict all-or-nothing replay.
+    """
+    action = operation["op"]
+    key = "" if action == "compact" else operation["key"]
+    prior = page.find(key)
+    pointer = page.slots[prior].offset if prior is not None else None
+    slot_id = prior
+    message = "完成"
+    try:
+        if action == "compact":
+            page.compact()
+            compacted = True
+        elif action == "delete":
+            slot_id = page.delete(key)
+            compacted = False
+        else:
+            write = page.insert if action == "insert" else page.update
+            slot_id, compacted = write(key, operation["note"].encode())
+            if compacted:
+                message = "压实后落盘"
+    except ValueError:
+        raise
+    slot = page.slots[slot_id] if slot_id is not None else None
+    return {
+        "步骤": step, "操作": ACTIONS[action], "履历": key, "槽号": slot_id,
+        "原偏移": pointer, "现偏移": slot.offset if slot else None,
+        "记录字节": slot.length if slot else None, "连续空闲": page.contiguous,
+        "碎片字节": page.fragmented, "结果": message,
+    }
+
+
+def trace_rows(page):
     rows = []
-    for step, operation in enumerate(payload["operations"], 1):
-        action = operation["op"]
-        key = "" if action == "compact" else operation["key"]
-        prior = page.find(key)
-        pointer = page.slots[prior].offset if prior is not None else None
-        slot_id = prior
-        message = "完成"
-        try:
-            if action == "compact":
-                page.compact()
-                compactions += 1
-            elif action == "delete":
-                slot_id = page.delete(key)
-            else:
-                write = page.insert if action == "insert" else page.update
-                slot_id, compacted = write(key, operation["note"].encode())
-                if compacted:
-                    compactions += 1
-                    message = "压实后落盘"
-        except ValueError as exc:
-            denied += 1
-            message = str(exc)
-        slot = page.slots[slot_id] if slot_id is not None else None
-        peak_waste = max(peak_waste, page.fragmented)
-        rows.append({
-            "步骤": step, "操作": ACTIONS[action], "履历": key, "槽号": slot_id,
-            "原偏移": pointer, "现偏移": slot.offset if slot else None,
-            "记录字节": slot.length if slot else None, "连续空闲": page.contiguous,
-            "碎片字节": page.fragmented, "结果": message,
-        })
     for index, item in enumerate(page.slots):
         if item:
             rows.append({
@@ -96,6 +94,11 @@ def run(payload, parameter, db):
                 "连续空闲": page.contiguous, "碎片字节": page.fragmented,
                 "结果": page.read(index).decode(),
             })
+    return rows
+
+
+def build_result(page, rows, *, denied=0, compactions=0, peak_waste=0):
+    rows = [*rows, *trace_rows(page)]
     live = sum(item is not None for item in page.slots)
     return {
         "summary": f"最终保留 {live} 条履历，压实 {compactions} 次，拒绝 {denied} 条操作。",
@@ -103,3 +106,60 @@ def run(payload, parameter, db):
                     "压实次数": compactions, "剩余字节": page.free},
         "rows": rows,
     }
+
+
+def run_detailed(payload, parameter, db=None, *, base_snapshot=None, strict=False):
+    validate(payload)
+    if base_snapshot is not None:
+        if isinstance(base_snapshot, SlottedPage):
+            page = base_snapshot.clone()
+        else:
+            page = SlottedPage.from_snapshot(base_snapshot)
+        if parameter is not None and int(parameter) != page.size:
+            raise ValueError(f"续单必须沿用底稿页容量 {page.size} 字节")
+    else:
+        if parameter < HEADER_BYTES:
+            raise ValueError(f"至少需要 {HEADER_BYTES} 字节页头")
+        page = SlottedPage(parameter)
+    denied = 0
+    peak_waste = 0
+    compactions = 0
+    rows = []
+    for step, operation in enumerate(payload["operations"], 1):
+        try:
+            row = apply_operation(page, operation, step)
+            if operation["op"] in {"insert", "update"} and row["结果"] == "压实后落盘":
+                compactions += 1
+            elif operation["op"] == "compact":
+                compactions += 1
+        except ValueError as exc:
+            if strict:
+                raise
+            denied += 1
+            action = operation["op"]
+            key = "" if action == "compact" else operation.get("key", "")
+            prior = page.find(key) if key else None
+            slot_id = prior
+            slot = page.slots[slot_id] if slot_id is not None else None
+            row = {
+                "步骤": step, "操作": ACTIONS[action], "履历": key, "槽号": slot_id,
+                "原偏移": slot.offset if slot else None,
+                "现偏移": slot.offset if slot else None,
+                "记录字节": slot.length if slot else None, "连续空闲": page.contiguous,
+                "碎片字节": page.fragmented, "结果": str(exc),
+            }
+        peak_waste = max(peak_waste, page.fragmented)
+        rows.append(row)
+    return build_result(
+        page, rows, denied=denied, compactions=compactions, peak_waste=peak_waste
+    ), page
+
+
+def run(payload, parameter=None, db=None, **kwargs):
+    return run_detailed(payload, parameter, db, **kwargs)[0]
+
+
+def continue_run(payload, base_snapshot=None, parameter=None, db=None, **kwargs):
+    """Strict continuation replay for callers that use the scenario module."""
+    kwargs.setdefault("strict", True)
+    return run(payload, parameter, db, base_snapshot=base_snapshot, **kwargs)

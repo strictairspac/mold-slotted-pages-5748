@@ -1,5 +1,5 @@
 """Byte-packed heap page with a forward directory and backward record arena."""
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 
 
 HEADER_BYTES = 16
@@ -11,6 +11,13 @@ class Slot:
     offset: int
     length: int
     key: str
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value):
+        return cls(offset=int(value["offset"]), length=int(value["length"]), key=str(value["key"]))
 
 
 class SlottedPage:
@@ -33,6 +40,49 @@ class SlottedPage:
     @property
     def fragmented(self):
         return self.free - self.contiguous
+
+    def clone(self):
+        """Return a deep copy so a rejected batch cannot touch the draft page."""
+        page = SlottedPage(self.size)
+        page.data = bytearray(self.data)
+        page.tail = self.tail
+        page.slots = [replace(slot) if slot is not None else None for slot in self.slots]
+        return page
+
+    def snapshot(self):
+        """Serialize the page, including tombstoned directory slots."""
+        return {
+            "version": 1,
+            "size": self.size,
+            "tail": self.tail,
+            "data": bytes(self.data).hex(),
+            "slots": [slot.to_dict() if slot is not None else None for slot in self.slots],
+        }
+
+    to_dict = snapshot
+
+    @classmethod
+    def from_snapshot(cls, value):
+        if not isinstance(value, dict):
+            raise ValueError("底稿页快照格式不正确")
+        size = int(value["size"])
+        page = cls(size)
+        raw = bytes.fromhex(value.get("data", ""))
+        if len(raw) != size:
+            raise ValueError("底稿页字节数与页容量不一致")
+        page.data = bytearray(raw)
+        page.tail = int(value["tail"])
+        slots = []
+        for slot in value.get("slots", []):
+            slots.append(None if slot is None else Slot.from_dict(slot))
+        page.slots = slots
+        if not 0 <= HEADER_BYTES + SLOT_BYTES * len(slots) <= page.tail <= size:
+            raise ValueError("底稿页快照的槽目录或页尾越界")
+        return page
+
+    @classmethod
+    def from_dict(cls, value):
+        return cls.from_snapshot(value)
 
     def find(self, key):
         return next(

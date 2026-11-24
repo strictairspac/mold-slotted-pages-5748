@@ -6,6 +6,7 @@ from sqlalchemy import insert, select
 from src.constants.job_state import JobState
 from src.domain.scenario import CONFIG
 from src.models.cases import cases
+from src.models.continuations import continuation_orders
 from src.models.runs import runs
 from . import audit, cases as case_service
 
@@ -18,7 +19,23 @@ def get(db, run_id):
     run = db.execute(query().where(runs.c.id == run_id)).mappings().first()
     if run is None:
         raise HTTPException(404, "执行批次不存在")
-    return dict(run)
+    entry = dict(run)
+    continuation = db.execute(
+        select(continuation_orders).where(continuation_orders.c.run_id == run_id)
+    ).mappings().first()
+    if continuation is not None:
+        info = dict(continuation)
+        entry["continuation"] = info
+        entry["base_run_id"] = info["base_run_id"]
+        entry["root_run_id"] = info["root_run_id"]
+        entry["winner_run_id"] = info["winner_run_id"]
+        entry["winner_id"] = info["winner_run_id"]
+        entry["winner_batch_id"] = info["winner_run_id"]
+        entry["successor_run_id"] = info["winner_run_id"]
+        entry["successor_id"] = info["winner_run_id"]
+        entry["successor_batch_id"] = info["winner_run_id"]
+        entry["idempotency_key"] = info["idempotency_key"]
+    return entry
 
 
 def list_entries(db):

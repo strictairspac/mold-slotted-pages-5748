@@ -1,7 +1,7 @@
 import { clearSession, session } from "../stores/session.js";
 
-export async function request(path, {method = "GET", data, raw = false, signal} = {}) {
-  const headers = new Headers();
+export async function request(path, {method = "GET", data, raw = false, signal, headers: extraHeaders} = {}) {
+  const headers = new Headers(extraHeaders || {});
   const current = session();
   if (current) headers.set("Authorization", `Bearer ${current.token}`);
   if (data !== undefined) headers.set("Content-Type", "application/json");
@@ -12,8 +12,15 @@ export async function request(path, {method = "GET", data, raw = false, signal} 
     clearSession();
     window.dispatchEvent(new Event("sessionchange"));
   }
-  const detail = Array.isArray(error.detail)
-    ? error.detail.map(entry => entry.msg).join("；")
-    : error.detail;
-  throw new Error(detail || `请求失败（${response.status}）`);
+  let detail = error.detail;
+  if (Array.isArray(detail)) detail = detail.map(entry => entry.msg).join("；");
+  else if (detail && typeof detail === "object") detail = detail.message || JSON.stringify(detail);
+  else if (error.message) detail = error.message;
+  const failure = new Error(detail || `请求失败（${response.status}）`);
+  failure.status = response.status;
+  failure.body = error;
+  for (const [key, value] of Object.entries(error)) {
+    if (key !== "detail" && key !== "message") failure[key] = value;
+  }
+  throw failure;
 }
